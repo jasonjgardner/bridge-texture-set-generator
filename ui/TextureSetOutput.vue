@@ -5,7 +5,9 @@
 			<v-card-subtitle v-text="fullPath"></v-card-subtitle>
 			<v-divider></v-divider>
 			<v-sheet class="pa-5" dark>
-				<v-btn rounded right absolute> JSON Output </v-btn>
+				<v-btn rounded right absolute @click="saveTextureSet">
+					JSON Output
+				</v-btn>
 
 				<pre class="select-all">{{ textureSetJson }}</pre>
 			</v-sheet>
@@ -25,22 +27,18 @@
 					<v-combobox
 						v-model="displayValue.color"
 						label="Base layer"
-						:items="[block]"
+						:items="[block, ...existingTextures.base]"
 						@input="(v) => onLayerInput('color', v)"
-					></v-combobox>
-				</v-list-item-content>
-				<v-list-item-action @click.stop="openColorPicker(false)">
-					<v-tooltip left>
-						<template v-slot:activator="{ on, attrs }">
-							<v-btn icon v-bind="attrs" v-on="on">
+					>
+						<template v-slot:append-outer>
+							<v-btn icon @click.stop="openColorPicker(false)">
 								<v-icon color="grey lighten-1"
 									>mdi-format-color-fill</v-icon
 								>
 							</v-btn>
 						</template>
-						<span>Select uniform color</span>
-					</v-tooltip>
-				</v-list-item-action>
+					</v-combobox>
+				</v-list-item-content>
 			</v-list-item>
 
 			<v-list-item>
@@ -48,22 +46,24 @@
 					<v-combobox
 						v-model="displayValue.mer"
 						label="MER map"
-						:items="merSuggestions"
+						:items="[...merSuggestions, ...existingTextures.mers]"
 						@input="(v) => onLayerInput('mer', v)"
-					></v-combobox>
-				</v-list-item-content>
-				<v-list-item-action @click.stop="openColorPicker(true)">
-					<v-tooltip left>
-						<template v-slot:activator="{ on, attrs }">
-							<v-btn icon v-bind="attrs" v-on="on">
+					>
+						<template v-slot:append-outer>
+							<v-btn icon @click.stop="openColorPicker(true)">
 								<v-icon color="grey lighten-1"
 									>mdi-format-color-fill</v-icon
 								>
 							</v-btn>
+
+							<v-btn icon @click="onLayerInput('mer', null)">
+								<v-icon color="grey lighten-1"
+									>mdi-close</v-icon
+								>
+							</v-btn>
 						</template>
-						<span>Select uniform color</span>
-					</v-tooltip>
-				</v-list-item-action>
+					</v-combobox>
+				</v-list-item-content>
 			</v-list-item>
 
 			<v-list-item>
@@ -73,8 +73,26 @@
 							inputValue[useNormalMap ? 'normal' : 'heightmap']
 						"
 						label="Depth map"
-						:items="depthMapSuggestions"
-					></v-combobox>
+						:items="[
+							...depthMapSuggestions,
+							...existingTextures.depth,
+						]"
+					>
+						<template v-slot:append-outer>
+							<v-btn
+								icon
+								@click="
+									inputValue[
+										useNormalMap ? 'normal' : 'heightmap'
+									] = null
+								"
+							>
+								<v-icon color="grey lighten-1"
+									>mdi-close</v-icon
+								>
+							</v-btn>
+						</template>
+					</v-combobox>
 				</v-list-item-content>
 				<v-list-item-action>
 					<v-menu open-on-hover close-on-click close-on-content-click>
@@ -104,6 +122,8 @@
 			</v-list-item>
 			<v-divider></v-divider>
 			<v-card-actions>
+				<v-spacer></v-spacer>
+				<v-btn text @click="$emit('reset')">Reset</v-btn>
 				<v-btn text color="primary" @click="saveTextureSet">Save</v-btn>
 			</v-card-actions>
 		</v-card>
@@ -126,29 +146,34 @@
 				</v-card-actions>
 			</v-card>
 		</v-dialog>
-
-		<v-snackbar v-model="showSnackbar">
-			{{ filename }} saved
-
-			<template v-slot:action="{ attrs }">
-				<v-btn
-					color="pink"
-					text
-					v-bind="attrs"
-					@click="showSnackbar = false"
-				>
-					Close
-				</v-btn>
-			</template>
-		</v-snackbar>
 	</div>
 </template>
 
 <script>
-const { writeJSON } = await require('@bridge/fs')
+const { writeJSON, readFilesFromDir } = await require('@bridge/fs')
+const { createError } = await require('@bridge/notification')
 const { getCurrentRP } = await require('@bridge/env')
 const ahex = (v) => `${v}`.substr(7, 2) + `${v}`.substr(1, 6)
 const getFormatVersions = () => ['1.16.100']
+
+const getExistingTextures = async (endsWithSearch = '_normal') => {
+	const existing = await readFilesFromDir(getCurrentRP() + '/textures/blocks')
+	const baseNames = existing
+		.filter(({ name }) => name.match(/\.(png|tga|gif|jpe?g)$/i))
+		.map(({ name }) => name.substr(0, name.indexOf('.')))
+
+	const mers = baseNames.filter((name) => name.endsWith('_mer'))
+	const depth = baseNames.filter((name) => name.endsWith(endsWithSearch))
+	const base = baseNames.filter(
+		(name) => !mers.includes(name) && !depth.includes(name)
+	)
+
+	return {
+		base,
+		mers,
+		depth,
+	}
+}
 
 export default {
 	name: 'TextureSetOutput',
@@ -178,9 +203,13 @@ export default {
 			mer: false,
 		},
 		useNormalMap: true,
-		showSnackbar: false,
+		existingTextures: {
+			base: [],
+			mers: [],
+			depth: [],
+		},
 	}),
-	mounted() {
+	async mounted() {
 		this.inputValue = {
 			color: `${this.block}`,
 			mer: `${this.block}_mer`,
@@ -189,11 +218,19 @@ export default {
 		}
 		this.displayValue = this.inputValue
 		this.formatVersion = getFormatVersions()[0]
+
+		this.existingTextures = await getExistingTextures(
+			this.useNormalMap ? '_normal' : '_heightmap'
+		)
 	},
 	methods: {
 		async saveTextureSet() {
-			await writeJSON(this.fullPath, this.textureSetData, true)
-			this.showSnackbar = true
+			try {
+				await writeJSON(this.fullPath, this.textureSetData, true)
+				this.$emit('save', this.fullPath)
+			} catch (err) {
+				createError(err)
+			}
 		},
 		openColorPicker(isMer) {
 			this.pickMer = isMer === true
